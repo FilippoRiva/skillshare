@@ -1,83 +1,149 @@
 ---
 name: remote-file-sync
-description: "Sync files over SSH fast and fix SSH password prompts."
-version: 2.1.0
-author: Hermes Agent
+description: "Transfer files over SSH with rsync, troubleshoot authentication, and optionally watch individual files for changes."
+version: 3.0.0
 license: MIT
-metadata:
-  hermes:
-    tags: [ssh, rsync, sync, remote, file-transfer, devops]
-    related_skills: [hermes-agent]
 ---
 
 # Remote File Sync (SSH + rsync)
 
-## When to Use
+Merged from the local remote-file-sync and ssh-file-sync skills.
 
-- Pull or push a single file (a PDF, a build artifact) between a local machine and a
-  remote server, fast, without the lag of a full remote mount.
-- Watch a remote file and trigger an action every time it changes.
-- rsync/ssh keeps prompting for a password on every invocation.
+## When to use
 
-Fast, low-latency syncing of individual files between a local machine and a remote
-host over SSH, with change-triggered actions and passwordless key auth.
+- Pull or push specific files between a local machine and an SSH host.
+- Fetch a remotely built artifact, such as a PDF, without mounting a whole filesystem.
+- Troubleshoot repeated SSH password or key-passphrase prompts.
+- Set up an explicitly requested watch function with change-triggered actions.
 
-## Core procedure
+This is one-way transfer guidance, not automatic two-way synchronization.
+Installing this skill does not create services, keys, or background jobs.
 
-### 1. Pick rsync over sshfs for one file
-Mounting an entire folder with sshfs is laggy (FUSE + per-op round-trips + full
-directory walks). For a single file use one-shot rsync — only that file is touched.
+## Scope and safety
 
-    rsync -avz --partial --inplace \
-      user@host:path/to/file.txt ./local-copy.txt
+1. Confirm the host, account, source, destination, and transfer direction. Inspect
+   paths before writing; transfers can overwrite existing destination files.
+2. Do not install packages, create keys, change SSH configuration, edit shell
+   startup files, or start persistent watchers without user authorization.
+3. Never copy private keys, passwords, tokens, or personal host configuration into
+   a skill, repository, logs, or chat. Do not disable host-key verification.
+4. Do not add `--delete` by default. Preview bulk or destructive operations with
+   `--dry-run --itemize-changes`, and obtain approval for deletions.
+5. Prefer ordinary rsync temporary-file replacement. Avoid `--inplace` by default:
+   an interrupted transfer can leave the destination partially updated, and other
+   programs may read it while it is changing.
 
-- `--partial --inplace`: resume a dropped/interrupted transfer from where it stopped
-  instead of restarting; write in place rather than via a temp file.
-- `-z` (compression) is usually a wash on already-compressed data (PDFs, zips) —
-  if transfer speed is bottlenecked by CPU, drop `-z` and keep the delta.
+## Choose a transfer method
 
-### 2. Act ONLY when the file actually changes
-`--itemize-changes` (`-i`) prints a line per changed file and prints NOTHING when
-the remote copy is byte-identical. Pipe to `grep -q '.'` so an action only fires on
-a real update, not on every poll.
+Use rsync over SSH for selective or repeated transfers; use scp for a simple
+one-off copy if appropriate. An SSHFS mount can be useful for interactive access
+across many files, but is unnecessary for fetching a single artifact. Performance
+is workload- and network-dependent; do not claim SSHFS is always slower.
 
-    rsync -aiz --partial --inplace user@host:path ./local 2>/dev/null \
-      | grep -q '.' && echo "updated"
+Both ends need rsync for an rsync-over-SSH transfer. If it is missing, explain the
+requirement and ask before installing it. On Arch, packages are `rsync` and
+`openssh`. An SSH client does not require enabling a local SSH server.
 
-- Poll loop with `sleep N` — N is always SECONDS (e.g. `sleep 2` = 2 seconds).
-- First run always reports if the local copy doesn't exist yet; subsequent runs stay
-  silent until a change ships.
-- Chain the side effect in the same `&&` branch: `&& { echo ...; open-cmd file; }`
-  so the viewer/notification only fires on an actual update.
-  Open a PDF in a new tab: `zen-browser --new-tab /path/file.pdf` (drop `--new-tab`
-  to just focus the file).
+## One-shot transfer
 
-### 3. Passwordless key auth (stop prompt-per-call)
-rsync shells out to ssh, so a password prompt fires on EVERY invocation in a loop.
-Fix once with key auth:
+The following are templates: replace the host and paths with confirmed values.
+Quote paths. Modern rsync's `-s` protects remote arguments, including spaces.
 
-    ssh-keygen -t ed25519 -f ~/ssh-keys/host                     # -t type, -f path
-    ssh-copy-id -i ~/ssh-keys/host user@host                     # prompts password THIS once
+Pull a file; create the local destination directory only if requested:
 
-- `-t ed25519` = modern default key type (fast, short, secure) vs rsa/ecdsa.
-- Generate passwordless/non-interactive with `-N ""` (empty passphrase); to re-do:
-  `rm key key.pub && ssh-keygen -t ed25519 -f <path> -N ""`. A key created WITH a
-  passphrase is a different key than one made with `-N""` — regenerate the whole
-  pair, then reinstall, don't just strip the passphrase in place.
-- `ssh-copy-id -i` takes the PRIVATE key path; it auto-appends `.pub`.
+```sh
+mkdir -p "$HOME/downloads"
+rsync -ai --partial -s --dry-run -- user@host:/absolute/path/report.pdf "$HOME/downloads/report.pdf"
+# After reviewing the preview, run the same command without --dry-run.
+```
 
-A key stored outside the default location is NOT offered automatically. Add it to
-`~/.ssh/config` or ssh won't present it and the loop STILL prompts:
+Push a file (the remote parent directory must already exist):
 
-    Host host
-        IdentityFile ~/ssh-keys/host
+```sh
+rsync -ai --partial -s --dry-run -- ./report.pdf user@host:/absolute/path/report.pdf
+```
 
-or pass it per-call to rsync with `-e 'ssh -i ~/ssh-keys/host'`.
+- `-a`: archive mode, including timestamps; consider permissions/metadata needs.
+- `-i`: itemize changes, useful for previews and change-triggered actions.
+- `--partial`: retain a partial transfer to help subsequent retries.
+- `-z`: optional compression; often unnecessary for PDFs, images, and archives.
+- For directories, `source/` copies contents; `source` copies the directory itself.
+- Default change detection uses size and modification time. Use `--checksum`
+  when content comparison is necessary, understanding that both ends must read files.
 
-## Pitfalls
+## SSH authentication without repeated prompts
 
-- **A bare `while true` pasted into `~/.zshrc` executes at shell startup and hangs
-the session.** Wrap it in a function (`name() { while true; do ...; done }`) so it
-only runs when invoked; or call it with `&` to background it.
-- Verify a remote key removal by grepping the count in `authorized_keys`
-(`grep -c ssh-ed25519 authorized_keys` -> `0`), not by assuming the delete worked.
+Distinguish the remote account password from a private-key passphrase. Check
+existing keys and the SSH agent before generating anything. Do not delete or
+regenerate keys merely to remove a passphrase; other hosts may depend on them.
+
+For a new dedicated key, only after approval, choose an unused path and use an
+Ed25519 key with a passphrase. Add it to the existing SSH agent if appropriate.
+Install only the public key on the intended host, verifying its fingerprint via
+an independent trusted source before accepting a new host key.
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/example-host_ed25519
+ssh-add ~/.ssh/example-host_ed25519
+ssh-copy-id -i ~/.ssh/example-host_ed25519.pub user@host
+ssh -i ~/.ssh/example-host_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes user@host true
+```
+
+The final command tests noninteractive access; failure is diagnostic, not a
+reason to weaken host-key checks. An empty passphrase is a security tradeoff for
+explicitly approved unattended automation, not the default recommendation.
+
+For a non-default key path, an approved `~/.ssh/config` entry can select it:
+
+```sshconfig
+Host example-host
+    HostName actual-hostname
+    User account
+    IdentityFile ~/.ssh/example-host_ed25519
+    IdentitiesOnly yes
+```
+
+Use that alias with rsync, or select the key explicitly:
+
+```sh
+rsync -ai --partial -s -e 'ssh -i ~/.ssh/example-host_ed25519 -o IdentitiesOnly=yes' -- user@host:/absolute/path/report.pdf ./report.pdf
+```
+
+SSH connection multiplexing can reuse an authenticated connection and reduce
+latency and repeated prompts while that connection remains alive. It does not
+provide credentials for a fresh connection; keys plus an agent are the usual
+interactive solution.
+
+## Optional change watcher (Bash/Zsh)
+
+Use only when requested. First verify noninteractive SSH works and the local
+parent directory exists. This foreground function polls one file and prints only
+when rsync reports a transfer or metadata change. It preserves rsync errors
+instead of hiding them or treating a failed transfer as success.
+
+```sh
+watch_remote_file() {
+    local remote="$1" destination="$2" output status
+    while true; do
+        if output=$(rsync -ai --partial -s -e 'ssh -o BatchMode=yes' -- "$remote" "$destination"); then
+            if [ -n "$output" ]; then
+                printf '%s\n' "$output"
+                # Put an explicitly requested notification/viewer action here.
+            fi
+        else
+            status=$?
+            printf 'rsync failed (exit %s); stopping watcher\n' "$status" >&2
+            return "$status"
+        fi
+        sleep 2
+    done
+}
+```
+
+Call with two arguments, for example a confirmed `user@host:/path/report.pdf`
+and local file path. Stop with Ctrl+C. `sleep 2` means two seconds.
+
+Never paste a bare infinite loop into `.zshrc` or `.bashrc`: it blocks shell
+startup. Defining a function does not start it. For requested persistent polling,
+consider a systemd user service/timer with failure visibility rather than silently
+backgrounding a shell loop. Never enable it without approval.
