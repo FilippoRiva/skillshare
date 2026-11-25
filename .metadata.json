@@ -1,19 +1,6 @@
 {
   "version": 1,
   "entries": {
-    "find-skills": {
-      "source": "github.com/vercel-labs/skills/skills/find-skills",
-      "type": "github-subdir",
-      "installed_at": "2026-11-25T16:07:11.695500722+01:00",
-      "repo_url": "https://github.com/vercel-labs/skills.git",
-      "subdir": "skills/find-skills",
-      "version": "57217cf",
-      "tree_hash": "76a98a285cb0434f3d39e1a873823556330e398b",
-      "commit": "57217cf86ba38148a57af9e90d14a4c049558330",
-      "file_hashes": {
-        "SKILL.md": "sha256:c00eeea0e13e74fe4a9d84ba0a8542205a1b736d65f13134fe1a6647eb14976f"
-      }
-    },
     "skillshare": {
       "source": "github.com/runkids/skillshare/skills/skillshare",
       "type": "github-subdir",
